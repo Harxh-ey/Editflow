@@ -2,7 +2,7 @@ import { createWorkflow, createStep } from '@mastra/core/workflows';
 import { z } from 'zod';
 import { callAI, isAIConfigured, getGemmaModel, safeParseJSON } from '@/lib/ai/provider';
 import { buildExtractionPrompt } from '@/lib/ai/prompts';
-import { ExtractionResultSchema, EXTRACTION_RESPONSE_SCHEMA } from '@/lib/validation/schemas';
+import { ExtractionResultSchema } from '@/lib/validation/schemas';
 import { heuristicExtract } from '@/lib/intelligence/heuristic';
 import { detectRevisions } from '@/lib/intelligence/revisions';
 import { detectConflicts } from '@/lib/intelligence/conflicts';
@@ -67,7 +67,6 @@ const requirementExtractionStep = createStep({
         const { system, user } = buildExtractionPrompt(messages);
         let raw = await callAI(system, user, {
           responseMimeType: 'application/json',
-          responseSchema: EXTRACTION_RESPONSE_SCHEMA,
         });
 
         let parseResult = safeParseJSON(raw);
@@ -75,11 +74,10 @@ const requirementExtractionStep = createStep({
         // If initial parse fails, retry once with a concise JSON-only instruction rather than crashing immediately
         if (!parseResult.success) {
           console.warn('Gemma initial JSON parsing failed. Retrying once with concise JSON-only instruction...');
-          const retryUser = `${user}\n\n[RETRY INSTRUCTION]: Output ONLY a single, valid JSON object conforming to the schema. Do not enclose in markdown backticks or conversational text. Begin immediately with "{" and end with "}".`;
+          const retryUser = `${user}\n\n[RETRY INSTRUCTION]: Output ONLY a single, valid JSON object conforming to the schema. Do not enclose in markdown backticks, code fences, or conversational text. Begin immediately with "{" and end with "}".`;
           try {
             raw = await callAI(system, retryUser, {
               responseMimeType: 'application/json',
-              responseSchema: EXTRACTION_RESPONSE_SCHEMA,
               temperature: 0.1,
             });
             parseResult = safeParseJSON(raw);

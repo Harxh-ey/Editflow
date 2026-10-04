@@ -19,7 +19,6 @@ export function isAIConfigured(): boolean {
 
 export interface CallAIOptions {
   responseMimeType?: string;
-  responseSchema?: Record<string, unknown>;
   temperature?: number;
   maxOutputTokens?: number;
 }
@@ -146,16 +145,15 @@ async function callGoogleGemma(
   // Passing system instructions within the initial user prompt context ensures compatibility across Gemma model variants.
   const combinedPrompt = `${systemPrompt}\n\n[USER INSTRUCTION]:\n${userPrompt}`;
 
+  const mimeType = options?.responseMimeType ?? 'application/json';
   const generationConfig: Record<string, unknown> = {
     temperature: options?.temperature ?? 0.2,
     maxOutputTokens: options?.maxOutputTokens ?? 4096,
-    response_mime_type: options?.responseMimeType ?? 'application/json',
-    responseMimeType: options?.responseMimeType ?? 'application/json',
   };
 
-  if (options?.responseSchema) {
-    generationConfig.response_schema = options.responseSchema;
-    generationConfig.responseSchema = options.responseSchema;
+  if (mimeType) {
+    generationConfig.response_mime_type = mimeType;
+    generationConfig.responseMimeType = mimeType;
   }
 
   const body = {
@@ -175,14 +173,12 @@ async function callGoogleGemma(
       body: JSON.stringify(body),
     });
 
-    // If endpoint rejects response_schema / responseSchema with 400, retry once with just response_mime_type
-    if (!response.ok && response.status === 400 && options?.responseSchema) {
-      console.warn(`Gemma endpoint returned 400 with responseSchema. Retrying with response_mime_type only...`);
+    // If endpoint rejects response_mime_type with 400, fall back to standard text generation
+    if (!response.ok && response.status === 400 && mimeType) {
+      console.warn('Gemma endpoint returned 400 with response_mime_type. Retrying with standard text generation...');
       const fallbackConfig: Record<string, unknown> = {
         temperature: options?.temperature ?? 0.2,
         maxOutputTokens: options?.maxOutputTokens ?? 4096,
-        response_mime_type: options?.responseMimeType ?? 'application/json',
-        responseMimeType: options?.responseMimeType ?? 'application/json',
       };
       response = await fetch(url, {
         method: 'POST',

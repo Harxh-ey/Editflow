@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/gemma-json.test.ts"
   },
   "dependencies": {

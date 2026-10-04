@@ -3,6 +3,13 @@ import type { Message } from '@/types';
 export function buildExtractionPrompt(messages: Message[]): { system: string; user: string } {
   const system = `You are a project requirements analyst for video editing projects. Your job is to analyze client conversations and extract structured project information.
 
+CRITICAL OUTPUT FORMAT REQUIREMENTS:
+- Output ONLY a single, valid JSON object.
+- DO NOT wrap in Markdown code fences (NO \`\`\` or \`\`\`json).
+- DO NOT write any introductory or conversational text before the JSON.
+- DO NOT write any closing remarks or summary text after the JSON.
+- Your entire response MUST start immediately with "{" and end with "}".
+
 RULES:
 - Extract only what is explicitly stated or clearly implied
 - Never invent requirements that aren't in the conversation
@@ -56,7 +63,12 @@ You MUST respond with valid JSON matching this exact schema:
     .map((m) => `[${m.id}] ${m.senderName}: "${m.content}"`)
     .join('\n');
 
-  const user = `Analyze this client conversation and extract all project requirements, revisions, conflicts, deliverables, and tasks:\n\n${formattedMessages}`;
+  const user = `Analyze this client conversation and extract all project requirements, revisions, conflicts, deliverables, and tasks:
+
+${formattedMessages}
+
+RESPONSE INSTRUCTION:
+Return ONLY the raw JSON object conforming to the schema. Do not include markdown formatting, backticks, or any commentary before or after. Start immediately with "{" and end with "}".`;
 
   return { system, user };
 }
@@ -75,12 +87,18 @@ export function buildIntelligencePrompt(
 ): { system: string; user: string } {
   const system = `You are a project assistant for a video editing project called "${projectContext.projectName}" for client "${projectContext.clientName}".
 
+CRITICAL OUTPUT FORMAT REQUIREMENTS:
+- Output ONLY a single, valid JSON object.
+- DO NOT wrap in Markdown code fences (NO \`\`\` or \`\`\`json).
+- DO NOT write any text before or after the JSON.
+- Your entire response MUST start immediately with "{" and end with "}".
+
 Answer questions about the project based on the context provided. Be concise and helpful.
 Use natural language, not technical jargon.
 Reference specific messages when relevant.
 If you don't know the answer, say so honestly.
 
-Respond in JSON:
+Respond in JSON matching this exact schema:
 {
   "answer": string,
   "sources": [{ "messageId": string, "snippet": string }],
@@ -107,7 +125,7 @@ MESSAGES:
 ${projectContext.messages.map((m) => `[${m.id}] ${m.content}`).join('\n')}
 `;
 
-  const user = `Context:\n${context}\n\nQuestion: ${query}`;
+  const user = `Context:\n${context}\n\nQuestion: ${query}\n\nRESPONSE INSTRUCTION: Return ONLY the raw JSON object. No markdown, no fences, no other text.`;
 
   return { system, user };
 }

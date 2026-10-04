@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { safeParseJSON, extractCleanJson } from '../src/lib/ai/provider';
-import { ExtractionResultSchema, EXTRACTION_RESPONSE_SCHEMA } from '../src/lib/validation/schemas';
+import { ExtractionResultSchema } from '../src/lib/validation/schemas';
 import { parseRawConversation } from '../src/lib/ai/extraction';
 import { heuristicExtract } from '../src/lib/intelligence/heuristic';
 
-// Sample valid extraction matching the canonical production conversation
+// Canonical sample extraction matching the exact EditFlow schema
 const sampleValidExtraction = {
   requirements: [
     {
@@ -127,66 +127,82 @@ const sampleValidExtraction = {
   summary: 'Cinematic 9:16 wedding reel with clip 18 opening, under 30s cut, and vow subtitles.',
 };
 
-test('1. Valid Gemma JSON Parsing', () => {
-  const rawJson = JSON.stringify(sampleValidExtraction, null, 2);
-  const result = safeParseJSON(rawJson);
+// 1. JSON response with response_mime_type: "application/json"
+test('1. Gemma path: JSON response with response_mime_type', () => {
+  // When Gemma returns content generated under response_mime_type: "application/json",
+  // it emits pure raw JSON without markdown fences.
+  const rawGemmaOutput = JSON.stringify(sampleValidExtraction);
+  const result = safeParseJSON(rawGemmaOutput);
 
   assert.equal(result.success, true);
   if (result.success) {
     const validated = ExtractionResultSchema.safeParse(result.data);
-    assert.equal(validated.success, true, 'Zod schema validation must pass on parsed JSON');
+    assert.equal(validated.success, true, 'Parsed JSON must conform to ExtractionResultSchema');
     if (validated.success) {
       assert.equal(validated.data.requirements.length, 5);
       assert.equal(validated.data.revisions.length, 2);
       assert.equal(validated.data.conflicts.length, 1);
       assert.equal(validated.data.tasks.length, 4);
-
-      // Verify evidence links and message IDs are preserved
-      const footageReq = validated.data.requirements.find((r) => r.category === 'footage');
-      assert.ok(footageReq);
-      assert.deepEqual(footageReq?.sourceMessageIds, ['msg_2', 'msg_6']);
+      assert.equal(validated.data.deliverables.length, 1);
+      assert.equal(validated.data.requirements[1].value, 'clip 18');
+      assert.deepEqual(validated.data.requirements[1].sourceMessageIds, ['msg_2', 'msg_6']);
     }
   }
 });
 
-test('2. Fenced JSON Parsing (Markdown code blocks and conversational text)', () => {
-  // Case 2a: Standard ```json code fence
+// 2. Plain text JSON response (standard generation without response_mime_type)
+test('2. Gemma path: plain text JSON response', () => {
+  // Model returns formatted plain text starting with { and ending with }
+  const plainTextJson = JSON.stringify(sampleValidExtraction, null, 2);
+  const result = safeParseJSON(plainTextJson);
+
+  assert.equal(result.success, true);
+  if (result.success) {
+    const validated = ExtractionResultSchema.safeParse(result.data);
+    assert.equal(validated.success, true);
+  }
+});
+
+// 3. Fenced JSON (Markdown code fences and accidental surrounding text)
+test('3. Gemma path: fenced JSON and conversational wrapping', () => {
+  // 3a. Standard ```json ... ``` code fence
   const fencedStandard = '```json\n' + JSON.stringify(sampleValidExtraction) + '\n```';
   const res1 = safeParseJSON(fencedStandard);
   assert.equal(res1.success, true);
 
-  // Case 2b: Generic ``` code fence
+  // 3b. Generic ``` ... ``` code fence
   const fencedGeneric = '```\n' + JSON.stringify(sampleValidExtraction) + '\n```';
   const res2 = safeParseJSON(fencedGeneric);
   assert.equal(res2.success, true);
 
-  // Case 2c: Model conversational preamble and closing remarks surrounding the code block
-  const conversationalWrapped = `Here is the structured extraction for the video editing project:
+  // 3c. Accidental conversational text before and after code block
+  const wrappedOutput = `Here is the requested JSON output for the client conversation:
 
 \`\`\`json
 ${JSON.stringify(sampleValidExtraction, null, 2)}
 \`\`\`
 
-Let me know if you would like me to adjust any of the extracted tasks or requirements!`;
+All requirements and tasks have been extracted. Let me know if you need changes.`;
 
-  const res3 = safeParseJSON(conversationalWrapped);
-  assert.equal(res3.success, true, 'Must extract JSON from conversational wrapper');
+  const res3 = safeParseJSON(wrappedOutput);
+  assert.equal(res3.success, true);
   if (res3.success) {
     const validated = ExtractionResultSchema.safeParse(res3.data);
     assert.equal(validated.success, true);
   }
 
-  // Case 2d: No code fences, but conversational text before and after raw JSON
-  const rawWithPreamble = `Sure, here is your project breakdown:
+  // 3d. Preamble and postscript WITHOUT code fences
+  const unfencedWithPreamble = `Sure! Here is the JSON output:
 ${JSON.stringify(sampleValidExtraction)}
-Hope this helps!`;
+Thank you!`;
 
-  const res4 = safeParseJSON(rawWithPreamble);
-  assert.equal(res4.success, true, 'Must extract JSON with bounding braces when no fences exist');
+  const res4 = safeParseJSON(unfencedWithPreamble);
+  assert.equal(res4.success, true);
 });
 
-test('3. Malformed JSON handling and recovery', () => {
-  // Case 3a: Trailing commas before closing braces/brackets
+// 4. Malformed JSON handling
+test('4. Gemma path: malformed JSON handling', () => {
+  // 4a. Trailing commas before closing braces/brackets
   const withTrailingCommas = `{
     "requirements": [
       {
@@ -208,53 +224,54 @@ test('3. Malformed JSON handling and recovery', () => {
   }`;
 
   const resCommas = safeParseJSON(withTrailingCommas);
-  assert.equal(resCommas.success, true, 'Trailing commas should be cleaned and parsed');
+  assert.equal(resCommas.success, true, 'Trailing commas should be cleaned and parsed successfully');
 
-  // Case 3b: Completely broken/unparseable non-JSON text
-  const totallyMalformed = 'I cannot output JSON for this conversation because the messages are unclear.';
-  const resBroken = safeParseJSON(totallyMalformed);
-  assert.equal(resBroken.success, false, 'Non-JSON text must report success=false');
+  // 4b. Non-JSON conversational text
+  const totallyBroken = 'I cannot output JSON for this conversation because some messages are missing.';
+  const resBroken = safeParseJSON(totallyBroken);
+  assert.equal(resBroken.success, false);
   if (!resBroken.success) {
     assert.match(resBroken.error.message, /Couldn't parse Gemma model response as JSON/);
   }
 
-  // Case 3c: Empty response
-  const emptyRes = safeParseJSON('');
-  assert.equal(emptyRes.success, false);
+  // 4c. Empty response string
+  const resEmpty = safeParseJSON('');
+  assert.equal(resEmpty.success, false);
 });
 
-test('4. Retry Simulation and Failure Recovery Behavior', () => {
-  // Simulate the workflow retry behavior:
-  // Step 1: First call returns malformed conversational text without valid JSON
-  const malformedFirstCall = 'Thinking: The user wants a cinematic video. Analysis in progress...';
-  let firstAttempt = safeParseJSON(malformedFirstCall);
-  assert.equal(firstAttempt.success, false);
+// 5. Retry / fallback behavior
+test('5. Gemma path: retry/fallback behavior', () => {
+  // Scenario 1: Initial call returns text without valid JSON, triggering retry with strict JSON instruction
+  const initialBadOutput = 'Analyzing client requirements... 1. Cinematic style. 2. Clip 12 then 18.';
+  let firstAttempt = safeParseJSON(initialBadOutput);
+  assert.equal(firstAttempt.success, false, 'First attempt fails safely');
 
-  // Step 2: Retry with concise JSON-only instruction produces valid JSON
-  const simulatedRetryOutput = JSON.stringify(sampleValidExtraction);
-  let retryAttempt = safeParseJSON(simulatedRetryOutput);
-  assert.equal(retryAttempt.success, true);
+  // Simulated retry with concise JSON-only instruction succeeds
+  const retryOutput = JSON.stringify(sampleValidExtraction);
+  let retryAttempt = safeParseJSON(retryOutput);
+  assert.equal(retryAttempt.success, true, 'Retry attempt succeeds');
   if (retryAttempt.success) {
     const validated = ExtractionResultSchema.safeParse(retryAttempt.data);
     assert.equal(validated.success, true);
   }
 
-  // Step 3: Persistent failure produces user-facing error message without crashing
-  const persistentFailure = 'Fatal error from LLM';
-  const finalParse = safeParseJSON(persistentFailure);
-  assert.equal(finalParse.success, false);
-  let caughtError: string | null = null;
+  // Scenario 2: Persistent failure produces user-facing error message without crashing
+  const persistentBadOutput = 'Still invalid text';
+  const finalAttempt = safeParseJSON(persistentBadOutput);
+  assert.equal(finalAttempt.success, false);
+  let thrownMessage = '';
   try {
-    if (!finalParse.success) {
+    if (!finalAttempt.success) {
       throw new Error("Couldn't parse Gemma model response as JSON. Please try again.");
     }
   } catch (err) {
-    caughtError = (err as Error).message;
+    thrownMessage = (err as Error).message;
   }
-  assert.equal(caughtError, "Couldn't parse Gemma model response as JSON. Please try again.");
+  assert.equal(thrownMessage, "Couldn't parse Gemma model response as JSON. Please try again.");
 });
 
-test('5. Canonical Production Conversation Pipeline', () => {
+// 6. Production test conversation pipeline & contract
+test('6. Production test conversation: Wedding Reel analysis and contract validation', () => {
   const rawConversation = `Client: Make this reel cinematic.
 Client: Use clip 12 for the opening.
 Client: Make it 9:16 for Instagram.
@@ -269,24 +286,20 @@ Client: Add elegant subtitles to the vows.`;
   assert.equal(messages[1].content, 'Use clip 12 for the opening.');
   assert.equal(messages[5].content, 'Use clip 18 instead of clip 12 for the opening.');
 
-  // Verify Demo Mode fallback heuristic extraction produces full requirements, revisions, conflicts, tasks
+  // Validate Demo Mode heuristic pipeline produces valid schema output
   const heuristicResult = heuristicExtract(messages);
   const validatedHeuristic = ExtractionResultSchema.safeParse(heuristicResult);
   assert.equal(validatedHeuristic.success, true, 'Deterministic heuristic must pass ExtractionResultSchema');
 
-  // Verify clip 12 -> clip 18 revision is captured
+  // Validate clip 12 -> clip 18 revision is captured
   const clipRevision = heuristicResult.revisions.find((r) => r.oldValue?.includes('12') || r.newValue?.includes('18'));
   assert.ok(clipRevision, 'Clip 12 -> Clip 18 revision must be captured');
 
-  // Verify duration conflict is captured
+  // Validate duration conflict is captured
   const durationConflict = heuristicResult.conflicts.find((c) => /duration|seconds|30|60/i.test(c.description));
   assert.ok(durationConflict, 'Duration conflict must be captured');
 
-  // Verify response schema is valid and complete
-  assert.equal(EXTRACTION_RESPONSE_SCHEMA.type, 'OBJECT');
-  assert.ok(EXTRACTION_RESPONSE_SCHEMA.properties.requirements);
-  assert.ok(EXTRACTION_RESPONSE_SCHEMA.properties.revisions);
-  assert.ok(EXTRACTION_RESPONSE_SCHEMA.properties.conflicts);
-  assert.ok(EXTRACTION_RESPONSE_SCHEMA.properties.deliverables);
-  assert.ok(EXTRACTION_RESPONSE_SCHEMA.properties.tasks);
+  // Validate all expected requirements exist
+  assert.ok(heuristicResult.requirements.length >= 4);
+  assert.ok(heuristicResult.tasks.length >= 3);
 });

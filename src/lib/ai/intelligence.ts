@@ -1,6 +1,6 @@
 import { callAI, isAIConfigured, safeParseJSON } from './provider';
 import { buildIntelligencePrompt } from './prompts';
-import { IntelligenceResponseSchema, INTELLIGENCE_RESPONSE_SCHEMA } from '@/lib/validation/schemas';
+import { IntelligenceResponseSchema } from '@/lib/validation/schemas';
 import { searchProjectMemory, getClientMemory } from '@/lib/mongodb/memory';
 import { withSpan } from '@/lib/observability/sentry';
 import type { IntelligenceResponse, Project, Message, Requirement, Revision, Conflict, Task } from '@/types';
@@ -57,7 +57,6 @@ export async function queryProject(
 
       let rawResponse = await callAI(system, user, {
         responseMimeType: 'application/json',
-        responseSchema: INTELLIGENCE_RESPONSE_SCHEMA,
       });
 
       let parseResult = safeParseJSON(rawResponse);
@@ -66,7 +65,6 @@ export async function queryProject(
         try {
           rawResponse = await callAI(system, retryUser, {
             responseMimeType: 'application/json',
-            responseSchema: INTELLIGENCE_RESPONSE_SCHEMA,
             temperature: 0.1,
           });
           parseResult = safeParseJSON(rawResponse);
