@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { extractJSON, safeParseJSON, extractCleanJson } from '../src/lib/ai/provider';
 import { ExtractionResultSchema } from '../src/lib/validation/schemas';
-import { parseRawConversation } from '../src/lib/ai/extraction';
+import { parseRawConversation, extractFromConversation } from '../src/lib/ai/extraction';
 import { heuristicExtract } from '../src/lib/intelligence/heuristic';
+import { queryProjectDemo } from '../src/lib/ai/intelligence';
 
 // Canonical sample extraction matching the exact EditFlow schema
 const sampleValidExtraction = {
@@ -283,4 +284,84 @@ Client: Add elegant subtitles to the vows.`;
   assert.ok(heuristicResult.requirements.length >= 4);
   assert.ok(heuristicResult.tasks.length >= 3);
 });
+
+// 7. Fallback behavior: extractFromConversation falls back to deterministic Demo Mode without throwing
+test('7. Fallback behavior: extractFromConversation guarantees valid ExtractionResult', async () => {
+  const messages = parseRawConversation('Client: Make it 9:16 vertical and under 30 seconds.', 'proj_fallback_test');
+  
+  // Call extractFromConversation (which falls back gracefully if AI call fails or is unconfigured)
+  const extraction = await extractFromConversation(messages, []);
+  
+  assert.ok(extraction.result, 'Extraction result must always be present');
+  assert.ok(extraction.mode === 'live' || extraction.mode === 'demo', 'Mode must be live or demo');
+  
+  const validated = ExtractionResultSchema.safeParse(extraction.result);
+  assert.equal(validated.success, true, 'Fallback output must pass ExtractionResultSchema');
+  assert.ok(extraction.result.requirements.length > 0, 'Requirements must be extracted even under fallback');
+});
+
+// 8. Fallback behavior: queryProjectDemo is reachable and provides a valid structured response
+test('8. Fallback behavior: queryProjectDemo answers queries reliably when AI fails', async () => {
+  const mockContext = {
+    project: {
+      id: 'proj_demo',
+      name: 'Wedding Reel',
+      clientName: 'Rahul',
+      description: 'Wedding Reel Video Project',
+      deadline: '2026-10-15',
+      status: 'active' as const,
+      isDemo: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    messages: [
+      {
+        id: 'msg_1',
+        projectId: 'proj_demo',
+        sender: 'client' as const,
+        senderName: 'Rahul',
+        content: 'Keep it around 60 seconds.',
+        timestamp: new Date().toISOString(),
+        index: 1,
+      },
+    ],
+    requirements: [
+      {
+        id: 'req_1',
+        projectId: 'proj_demo',
+        title: 'Target duration',
+        description: 'Duration requirement',
+        value: '60s',
+        category: 'duration' as const,
+        status: 'unresolved' as const,
+        confidence: 0.9,
+        sourceMessageIds: ['msg_1'],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ],
+    conflicts: [
+      {
+        id: 'conf_1',
+        projectId: 'proj_demo',
+        description: 'Duration conflict 60s vs 30s',
+        requirementIds: ['req_1'],
+        severity: 'high' as const,
+        status: 'open' as const,
+        suggestedAction: 'Confirm final duration with client',
+        sourceMessageIds: ['msg_1'],
+        createdAt: new Date().toISOString(),
+        resolvedAt: null,
+      },
+    ],
+    tasks: [],
+    revisions: [],
+  };
+
+  const response = await queryProjectDemo('proj_demo', 'What needs confirmation?', mockContext);
+  assert.ok(typeof response.answer === 'string' && response.answer.length > 0, 'Answer must be a non-empty string');
+  assert.ok(Array.isArray(response.sources), 'Sources must be an array');
+  assert.ok(Array.isArray(response.relatedRequirements), 'Related requirements must be an array');
+});
+
 

@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { parseRawConversation, extractFromConversation } from '@/lib/ai/extraction';
+import { heuristicExtract } from '@/lib/intelligence/heuristic';
 import { withSpan } from '@/lib/observability/sentry';
+import type { ExtractionResult } from '@/types';
 import {
   getProject,
   getMessages,
@@ -58,20 +60,31 @@ export async function POST(
         const allMessages = [...existingMessages, ...messages];
         const existingRequirements = await getRequirements(params.id);
 
-        const extraction = await extractFromConversation(
-          existingMessages.length === 0 ? allMessages : messages,
-          existingRequirements,
-          { projectId: params.id }
-        );
+        const targetMessages = existingMessages.length === 0 ? allMessages : messages;
 
-        if ('error' in extraction) {
-          return NextResponse.json(
-            { error: extraction.error },
-            { status: 422 }
+        let result: ExtractionResult;
+        let mode: 'live' | 'demo';
+
+        try {
+          const extraction = await extractFromConversation(
+            targetMessages,
+            existingRequirements,
+            { projectId: params.id }
           );
-        }
 
-        const { result, mode } = extraction;
+          if ('error' in extraction) {
+            console.warn('Gemma failed — using deterministic Demo Mode fallback.');
+            result = heuristicExtract(targetMessages);
+            mode = 'demo';
+          } else {
+            result = extraction.result;
+            mode = extraction.mode;
+          }
+        } catch (workflowErr) {
+          console.warn('Gemma failed — using deterministic Demo Mode fallback.', workflowErr);
+          result = heuristicExtract(targetMessages);
+          mode = 'demo';
+        }
 
         await withSpan(
           'database.persistence',

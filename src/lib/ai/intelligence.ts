@@ -75,8 +75,10 @@ export async function queryProject(
         }
       }
 
+      console.warn('Gemma failed — using deterministic Demo Mode fallback.');
       return queryProjectDemo(projectId, query, context);
-    } catch {
+    } catch (err) {
+      console.warn('Gemma failed — using deterministic Demo Mode fallback.', err);
       return queryProjectDemo(projectId, query, context);
     }
   }, { projectId, op: 'ai.query' });

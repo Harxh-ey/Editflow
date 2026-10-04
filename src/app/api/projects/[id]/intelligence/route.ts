@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { queryProject } from '@/lib/ai/intelligence';
+import { queryProject, queryProjectDemo } from '@/lib/ai/intelligence';
 import { getFullProject } from '@/lib/store';
 
 export async function POST(
@@ -25,14 +25,27 @@ export async function POST(
       );
     }
 
-    const response = await queryProject(params.id, query, {
-      project: projectData,
-      messages: projectData.messages,
-      requirements: projectData.requirements,
-      revisions: projectData.revisions,
-      conflicts: projectData.conflicts,
-      tasks: projectData.tasks,
-    });
+    let response;
+    try {
+      response = await queryProject(params.id, query, {
+        project: projectData,
+        messages: projectData.messages,
+        requirements: projectData.requirements,
+        revisions: projectData.revisions,
+        conflicts: projectData.conflicts,
+        tasks: projectData.tasks,
+      });
+    } catch (err) {
+      console.warn('Gemma failed — using deterministic Demo Mode fallback.', err);
+      response = await queryProjectDemo(params.id, query, {
+        project: projectData,
+        messages: projectData.messages,
+        requirements: projectData.requirements,
+        revisions: projectData.revisions,
+        conflicts: projectData.conflicts,
+        tasks: projectData.tasks,
+      });
+    }
 
     return NextResponse.json(response);
   } catch (error) {

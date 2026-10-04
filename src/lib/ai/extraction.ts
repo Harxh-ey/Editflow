@@ -1,4 +1,5 @@
 import { runEditFlowWorkflow } from '@/lib/mastra/workflow';
+import { heuristicExtract } from '@/lib/intelligence/heuristic';
 import type { Message, ExtractionResult, Requirement, MessageSender } from '@/types';
 
 /**
@@ -61,12 +62,13 @@ export async function extractFromConversation(
   messages: Message[],
   existingRequirements: Requirement[] = [],
   options?: { projectId?: string }
-): Promise<{ result: ExtractionResult; mode: 'live' | 'demo' } | { error: string }> {
+): Promise<{ result: ExtractionResult; mode: 'live' | 'demo' }> {
   try {
     const { result, mode } = await runEditFlowWorkflow(messages, existingRequirements, options);
     return { result, mode };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Couldn't analyze this conversation. Check your AI configuration and try again.";
-    return { error: message };
+    console.warn('Gemma failed — using deterministic Demo Mode fallback.', error);
+    const result = heuristicExtract(messages);
+    return { result, mode: 'demo' };
   }
 }
