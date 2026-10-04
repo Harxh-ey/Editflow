@@ -178,6 +178,118 @@ export const ExtractionResultSchema = z.object({
   summary: z.string(),
 });
 
+// Google Generative Language API OpenAPI/JSON response schema for Gemma structured extraction
+export const EXTRACTION_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    requirements: {
+      type: 'ARRAY',
+      description: 'Extracted project requirements with source evidence',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          title: { type: 'STRING' },
+          description: { type: 'STRING' },
+          value: { type: 'STRING', nullable: true },
+          category: {
+            type: 'STRING',
+            enum: [
+              'deliverable', 'format', 'duration', 'aspect_ratio', 'style', 'effect',
+              'footage', 'subtitle', 'music', 'color_grading', 'deadline', 'preference',
+              'asset', 'approval', 'other',
+            ],
+          },
+          status: {
+            type: 'STRING',
+            enum: ['confirmed', 'unresolved', 'changed', 'removed'],
+          },
+          confidence: { type: 'NUMBER' },
+          sourceMessageIds: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+          },
+        },
+        required: ['title', 'description', 'category', 'status', 'confidence', 'sourceMessageIds'],
+      },
+    },
+    revisions: {
+      type: 'ARRAY',
+      description: 'Changes and modifications between messages',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          requirementId: { type: 'STRING', nullable: true },
+          type: { type: 'STRING', enum: ['changed', 'added', 'removed'] },
+          field: { type: 'STRING' },
+          oldValue: { type: 'STRING', nullable: true },
+          newValue: { type: 'STRING', nullable: true },
+          sourceMessageId: { type: 'STRING' },
+          timestamp: { type: 'STRING' },
+        },
+        required: ['type', 'field', 'sourceMessageId'],
+      },
+    },
+    conflicts: {
+      type: 'ARRAY',
+      description: 'Unresolved contradictions between client instructions',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          description: { type: 'STRING' },
+          requirementIds: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+          },
+          severity: { type: 'STRING', enum: ['low', 'medium', 'high'] },
+          status: { type: 'STRING', enum: ['open', 'resolved', 'dismissed'] },
+          suggestedAction: { type: 'STRING' },
+          sourceMessageIds: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+          },
+        },
+        required: ['description', 'requirementIds', 'severity', 'status', 'suggestedAction', 'sourceMessageIds'],
+      },
+    },
+    deliverables: {
+      type: 'ARRAY',
+      description: 'Project deliverables with aspect ratio and duration specifications',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          title: { type: 'STRING' },
+          format: { type: 'STRING', nullable: true },
+          duration: { type: 'STRING', nullable: true },
+          aspectRatio: { type: 'STRING', nullable: true },
+          sourceMessageIds: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+          },
+        },
+        required: ['title', 'sourceMessageIds'],
+      },
+    },
+    tasks: {
+      type: 'ARRAY',
+      description: 'Actionable video editing checklist items',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          title: { type: 'STRING' },
+          status: { type: 'STRING', enum: ['todo', 'in_progress', 'done', 'blocked'] },
+          priority: { type: 'STRING', enum: ['low', 'medium', 'high', 'urgent'] },
+          sourceRequirementId: { type: 'STRING', nullable: true },
+          deadline: { type: 'STRING', nullable: true },
+        },
+        required: ['title', 'status', 'priority'],
+      },
+    },
+    deadline: { type: 'STRING', nullable: true },
+    summary: { type: 'STRING' },
+  },
+  required: ['requirements', 'revisions', 'conflicts', 'deliverables', 'tasks', 'summary'],
+};
+
 // ---- Command query ----
 export const CommandQuerySchema = z.object({
   projectId: z.string(),
@@ -192,3 +304,27 @@ export const IntelligenceResponseSchema = z.object({
   })),
   relatedRequirements: z.array(z.string()),
 });
+
+// Google Generative Language API response schema for Command Bar Intelligence queries
+export const INTELLIGENCE_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    answer: { type: 'STRING' },
+    sources: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          messageId: { type: 'STRING' },
+          snippet: { type: 'STRING' },
+        },
+        required: ['messageId', 'snippet'],
+      },
+    },
+    relatedRequirements: {
+      type: 'ARRAY',
+      items: { type: 'STRING' },
+    },
+  },
+  required: ['answer', 'sources', 'relatedRequirements'],
+};

@@ -1,8 +1,8 @@
 import { createWorkflow, createStep } from '@mastra/core/workflows';
 import { z } from 'zod';
-import { callAI, isAIConfigured, getGemmaModel } from '@/lib/ai/provider';
+import { callAI, isAIConfigured, getGemmaModel, safeParseJSON } from '@/lib/ai/provider';
 import { buildExtractionPrompt } from '@/lib/ai/prompts';
-import { ExtractionResultSchema } from '@/lib/validation/schemas';
+import { ExtractionResultSchema, EXTRACTION_RESPONSE_SCHEMA } from '@/lib/validation/schemas';
 import { heuristicExtract } from '@/lib/intelligence/heuristic';
 import { detectRevisions } from '@/lib/intelligence/revisions';
 import { detectConflicts } from '@/lib/intelligence/conflicts';
@@ -65,16 +65,34 @@ const requirementExtractionStep = createStep({
         }
 
         const { system, user } = buildExtractionPrompt(messages);
-        const raw = await callAI(system, user);
+        let raw = await callAI(system, user, {
+          responseMimeType: 'application/json',
+          responseSchema: EXTRACTION_RESPONSE_SCHEMA,
+        });
 
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
+        let parseResult = safeParseJSON(raw);
+
+        // If initial parse fails, retry once with a concise JSON-only instruction rather than crashing immediately
+        if (!parseResult.success) {
+          console.warn('Gemma initial JSON parsing failed. Retrying once with concise JSON-only instruction...');
+          const retryUser = `${user}\n\n[RETRY INSTRUCTION]: Output ONLY a single, valid JSON object conforming to the schema. Do not enclose in markdown backticks or conversational text. Begin immediately with "{" and end with "}".`;
+          try {
+            raw = await callAI(system, retryUser, {
+              responseMimeType: 'application/json',
+              responseSchema: EXTRACTION_RESPONSE_SCHEMA,
+              temperature: 0.1,
+            });
+            parseResult = safeParseJSON(raw);
+          } catch (retryError) {
+            console.error('Gemma retry extraction request failed:', retryError);
+          }
+        }
+
+        if (!parseResult.success) {
           throw new Error("Couldn't parse Gemma model response as JSON. Please try again.");
         }
 
-        const validated = ExtractionResultSchema.safeParse(parsed);
+        const validated = ExtractionResultSchema.safeParse(parseResult.data);
         if (!validated.success) {
           throw new Error("Couldn't validate extraction from Gemma. The structured output was incomplete.");
         }

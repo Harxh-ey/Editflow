@@ -1,6 +1,6 @@
-import { callAI, isAIConfigured } from './provider';
+import { callAI, isAIConfigured, safeParseJSON } from './provider';
 import { buildIntelligencePrompt } from './prompts';
-import { IntelligenceResponseSchema } from '@/lib/validation/schemas';
+import { IntelligenceResponseSchema, INTELLIGENCE_RESPONSE_SCHEMA } from '@/lib/validation/schemas';
 import { searchProjectMemory, getClientMemory } from '@/lib/mongodb/memory';
 import { withSpan } from '@/lib/observability/sentry';
 import type { IntelligenceResponse, Project, Message, Requirement, Revision, Conflict, Task } from '@/types';
@@ -55,19 +55,43 @@ export async function queryProject(
         messages: context.messages.map((m) => ({ id: m.id, content: m.content })),
       });
 
-      const rawResponse = await callAI(system, user);
-      const parsed = JSON.parse(rawResponse);
-      const validated = IntelligenceResponseSchema.safeParse(parsed);
+      let rawResponse = await callAI(system, user, {
+        responseMimeType: 'application/json',
+        responseSchema: INTELLIGENCE_RESPONSE_SCHEMA,
+      });
 
-      if (validated.success) {
-        return validated.data;
+      let parseResult = safeParseJSON(rawResponse);
+      if (!parseResult.success) {
+        const retryUser = `${user}\n\n[RETRY INSTRUCTION]: Return ONLY valid raw JSON conforming to the schema without markdown or commentary.`;
+        try {
+          rawResponse = await callAI(system, retryUser, {
+            responseMimeType: 'application/json',
+            responseSchema: INTELLIGENCE_RESPONSE_SCHEMA,
+            temperature: 0.1,
+          });
+          parseResult = safeParseJSON(rawResponse);
+        } catch {
+          // Fall through
+        }
       }
 
-      return {
-        answer: parsed.answer || 'I couldn\'t fully analyze that question.',
-        sources: [],
-        relatedRequirements: [],
-      };
+      if (parseResult.success) {
+        const validated = IntelligenceResponseSchema.safeParse(parseResult.data);
+        if (validated.success) {
+          return validated.data;
+        }
+
+        const dataObj = parseResult.data as Record<string, unknown>;
+        if (typeof dataObj?.answer === 'string') {
+          return {
+            answer: dataObj.answer,
+            sources: [],
+            relatedRequirements: [],
+          };
+        }
+      }
+
+      return queryProjectDemo(projectId, query, context);
     } catch {
       return queryProjectDemo(projectId, query, context);
     }
