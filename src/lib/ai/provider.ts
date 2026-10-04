@@ -24,17 +24,51 @@ export interface CallAIOptions {
 }
 
 /**
- * Strips markdown code fences (```json ... ```) and extracts the outermost
+ * Extracts generated text from a Google Generative Language API candidate.
+ * Filters out internal reasoning/thought parts (e.g. from models with thought: true)
+ * and concatenates all text parts to avoid truncating responses split across multiple parts.
+ */
+export function extractCandidateText(candidate?: {
+  content?: {
+    parts?: Array<{ text?: string; thought?: boolean }>;
+  };
+}): string {
+  const parts = candidate?.content?.parts ?? [];
+
+  // Filter out thought/scratchpad parts (models emitting reasoning with thought: true)
+  const answerParts = parts.filter(
+    (p) => !p.thought && typeof p.text === 'string' && p.text.trim().length > 0
+  );
+
+  if (answerParts.length > 0) {
+    return answerParts.map((p) => p.text).join('').trim();
+  }
+
+  // Fallback to all text parts if no parts are unmarked
+  const allTextParts = parts.filter(
+    (p) => typeof p.text === 'string' && p.text.trim().length > 0
+  );
+  return allTextParts.map((p) => p.text).join('').trim();
+}
+
+/**
+ * Strips markdown code fences (```json ... ```), reasoning tags, and extracts the outermost
  * JSON object or array from text emitted by instruction-tuned Gemma models.
  */
 export function extractCleanJson(rawText: string): string {
   if (!rawText) return '';
   let cleaned = rawText.replace(/^\uFEFF/, '').trim();
 
-  // 1. Try markdown code fences first
-  const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenceMatch) {
-    cleaned = fenceMatch[1].trim();
+  // Strip <thought>...</thought> or <think>...</think> reasoning blocks if present
+  cleaned = cleaned.replace(/<(thought|think)>[\s\S]*?<\/\1>/gi, '').trim();
+
+  // 1. If wrapped in markdown code fences, extract the fenced block (preferring ```json)
+  const jsonFenceMatch = cleaned.match(/```json\s*([\s\S]*?)\s*```/i);
+  const anyFenceMatch = cleaned.match(/```\s*([\s\S]*?)\s*```/i);
+  const fenceContent = jsonFenceMatch?.[1] ?? anyFenceMatch?.[1];
+
+  if (fenceContent && (fenceContent.includes('{') || fenceContent.includes('['))) {
+    cleaned = fenceContent.trim();
   }
 
   // 2. If the text still has surrounding text, isolate the outermost JSON structure
@@ -60,8 +94,9 @@ export function extractCleanJson(rawText: string): string {
  * Safely parses JSON emitted by Gemma.
  * Employs defensive multi-stage fallback:
  * 1. Direct JSON.parse
- * 2. Code-fence and boundary extraction
+ * 2. Code-fence, thought-tag, and boundary extraction
  * 3. Trailing comma cleanup (e.g. { "a": 1, })
+ * 4. JS-style line comment cleanup
  */
 export function safeParseJSON<T = unknown>(
   rawText: string
@@ -95,6 +130,16 @@ export function safeParseJSON<T = unknown>(
   try {
     const withoutTrailingCommas = cleaned.replace(/,\s*([\]}])/g, '$1');
     const data = JSON.parse(withoutTrailingCommas) as T;
+    return { success: true, data };
+  } catch {
+    // Continue
+  }
+
+  // Stage 4: Strip JS-style line comments (// ...) outside strings if stage 3 fails
+  try {
+    const withoutTrailingCommas = cleaned.replace(/,\s*([\]}])/g, '$1');
+    const withoutComments = withoutTrailingCommas.replace(/\/\/[^\n\r]*/g, '');
+    const data = JSON.parse(withoutComments) as T;
     return { success: true, data };
   } catch {
     // Continue
@@ -197,7 +242,8 @@ async function callGoogleGemma(
     }
 
     const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const candidate = data?.candidates?.[0];
+    const text = extractCandidateText(candidate);
     if (!text) {
       throw new Error('Gemma returned an empty response.');
     }

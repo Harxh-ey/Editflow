@@ -55,23 +55,11 @@ export async function queryProject(
         messages: context.messages.map((m) => ({ id: m.id, content: m.content })),
       });
 
-      let rawResponse = await callAI(system, user, {
+      const rawResponse = await callAI(system, user, {
         responseMimeType: 'application/json',
       });
 
-      let parseResult = safeParseJSON(rawResponse);
-      if (!parseResult.success) {
-        const retryUser = `${user}\n\n[RETRY INSTRUCTION]: Return ONLY valid raw JSON conforming to the schema without markdown or commentary.`;
-        try {
-          rawResponse = await callAI(system, retryUser, {
-            responseMimeType: 'application/json',
-            temperature: 0.1,
-          });
-          parseResult = safeParseJSON(rawResponse);
-        } catch {
-          // Fall through
-        }
-      }
+      const parseResult = safeParseJSON(rawResponse);
 
       if (parseResult.success) {
         const validated = IntelligenceResponseSchema.safeParse(parseResult.data);

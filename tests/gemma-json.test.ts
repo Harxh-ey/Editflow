@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { safeParseJSON, extractCleanJson } from '../src/lib/ai/provider';
+import { safeParseJSON, extractCleanJson, extractCandidateText } from '../src/lib/ai/provider';
 import { ExtractionResultSchema } from '../src/lib/validation/schemas';
 import { parseRawConversation } from '../src/lib/ai/extraction';
 import { heuristicExtract } from '../src/lib/intelligence/heuristic';
@@ -303,3 +303,70 @@ Client: Add elegant subtitles to the vows.`;
   assert.ok(heuristicResult.requirements.length >= 4);
   assert.ok(heuristicResult.tasks.length >= 3);
 });
+
+// 7. Gemma path: Candidate with thought: true part followed by JSON part
+test('7. Gemma path: candidate with reasoning/thought parts (Google API format)', () => {
+  const candidateWithThoughts = {
+    content: {
+      parts: [
+        {
+          thought: true,
+          text: 'Thinking Process:\n1. Understand the goal: user wants structured requirements.\n2. Analyze conversation: client asked for cinematic style, clip 18 opening, under 30s cut.\n3. Build JSON payload according to schema.',
+        },
+        {
+          text: JSON.stringify(sampleValidExtraction),
+        },
+      ],
+    },
+  };
+
+  const extractedText = extractCandidateText(candidateWithThoughts);
+  assert.ok(!extractedText.includes('Thinking Process'), 'Thought parts must be filtered out');
+
+  const parsed = safeParseJSON(extractedText);
+  assert.equal(parsed.success, true);
+  if (parsed.success) {
+    const validated = ExtractionResultSchema.safeParse(parsed.data);
+    assert.equal(validated.success, true);
+  }
+});
+
+// 8. Gemma path: Multi-part candidate response concatenated seamlessly
+test('8. Gemma path: multi-part response split across candidate parts', () => {
+  const fullJson = JSON.stringify(sampleValidExtraction);
+  const midPoint = Math.floor(fullJson.length / 2);
+  const chunk1 = fullJson.slice(0, midPoint);
+  const chunk2 = fullJson.slice(midPoint);
+
+  const multiPartCandidate = {
+    content: {
+      parts: [
+        { text: chunk1 },
+        { text: chunk2 },
+      ],
+    },
+  };
+
+  const extractedText = extractCandidateText(multiPartCandidate);
+  assert.equal(extractedText, fullJson);
+
+  const parsed = safeParseJSON(extractedText);
+  assert.equal(parsed.success, true);
+});
+
+// 9. Gemma path: Plain text with <thought> tags before JSON
+test('9. Gemma path: plain text containing <thought> tags before JSON', () => {
+  const textWithThoughtTags = `<thought>
+Examining the conversation for requirements and revisions.
+Found: clip 18, under 30s, cinematic style.
+</thought>
+${JSON.stringify(sampleValidExtraction)}`;
+
+  const parsed = safeParseJSON(textWithThoughtTags);
+  assert.equal(parsed.success, true);
+  if (parsed.success) {
+    const validated = ExtractionResultSchema.safeParse(parsed.data);
+    assert.equal(validated.success, true);
+  }
+});
+
