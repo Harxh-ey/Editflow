@@ -4,6 +4,7 @@ export function buildExtractionPrompt(messages: Message[]): { system: string; us
   const system = `You are a project requirements analyst for video editing projects. Your job is to analyze client conversations and extract structured project information.
 
 CRITICAL OUTPUT FORMAT REQUIREMENTS:
+Return exactly one valid JSON object matching this schema. No markdown, no code fences, no explanation.
 - Output ONLY a single, valid JSON object.
 - DO NOT wrap in Markdown code fences (NO \`\`\` or \`\`\`json).
 - DO NOT write any introductory or conversational text before the JSON.
@@ -68,7 +69,7 @@ You MUST respond with valid JSON matching this exact schema:
 ${formattedMessages}
 
 RESPONSE INSTRUCTION:
-Return ONLY the raw JSON object conforming to the schema. Do not include markdown formatting, backticks, or any commentary before or after. Start immediately with "{" and end with "}".`;
+Return exactly one valid JSON object matching this schema. No markdown, no code fences, no explanation. Start immediately with "{" and end with "}".`;
 
   return { system, user };
 }

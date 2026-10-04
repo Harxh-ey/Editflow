@@ -55,9 +55,7 @@ export async function queryProject(
         messages: context.messages.map((m) => ({ id: m.id, content: m.content })),
       });
 
-      const rawResponse = await callAI(system, user, {
-        responseMimeType: 'application/json',
-      });
+      const rawResponse = await callAI(system, user);
 
       const parseResult = safeParseJSON(rawResponse);
 

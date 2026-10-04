@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { safeParseJSON, extractCleanJson, extractCandidateText } from '../src/lib/ai/provider';
+import { extractJSON, safeParseJSON, extractCleanJson } from '../src/lib/ai/provider';
 import { ExtractionResultSchema } from '../src/lib/validation/schemas';
 import { parseRawConversation } from '../src/lib/ai/extraction';
 import { heuristicExtract } from '../src/lib/intelligence/heuristic';
@@ -127,82 +127,54 @@ const sampleValidExtraction = {
   summary: 'Cinematic 9:16 wedding reel with clip 18 opening, under 30s cut, and vow subtitles.',
 };
 
-// 1. JSON response with response_mime_type: "application/json"
-test('1. Gemma path: JSON response with response_mime_type', () => {
-  // When Gemma returns content generated under response_mime_type: "application/json",
-  // it emits pure raw JSON without markdown fences.
+// 1. Pure JSON
+test('1. Pure JSON: extractJSON parses raw JSON string without markdown or formatting', () => {
   const rawGemmaOutput = JSON.stringify(sampleValidExtraction);
-  const result = safeParseJSON(rawGemmaOutput);
+  const parsed = extractJSON(rawGemmaOutput);
+  const validated = ExtractionResultSchema.safeParse(parsed);
 
-  assert.equal(result.success, true);
-  if (result.success) {
-    const validated = ExtractionResultSchema.safeParse(result.data);
-    assert.equal(validated.success, true, 'Parsed JSON must conform to ExtractionResultSchema');
-    if (validated.success) {
-      assert.equal(validated.data.requirements.length, 5);
-      assert.equal(validated.data.revisions.length, 2);
-      assert.equal(validated.data.conflicts.length, 1);
-      assert.equal(validated.data.tasks.length, 4);
-      assert.equal(validated.data.deliverables.length, 1);
-      assert.equal(validated.data.requirements[1].value, 'clip 18');
-      assert.deepEqual(validated.data.requirements[1].sourceMessageIds, ['msg_2', 'msg_6']);
-    }
+  assert.equal(validated.success, true, 'Parsed pure JSON must conform to ExtractionResultSchema');
+  if (validated.success) {
+    assert.equal(validated.data.requirements.length, 5);
+    assert.equal(validated.data.revisions.length, 2);
+    assert.equal(validated.data.conflicts.length, 1);
+    assert.equal(validated.data.tasks.length, 4);
+    assert.equal(validated.data.requirements[1].value, 'clip 18');
   }
 });
 
-// 2. Plain text JSON response (standard generation without response_mime_type)
-test('2. Gemma path: plain text JSON response', () => {
-  // Model returns formatted plain text starting with { and ending with }
-  const plainTextJson = JSON.stringify(sampleValidExtraction, null, 2);
-  const result = safeParseJSON(plainTextJson);
+// 2. Fenced JSON
+test('2. Fenced JSON: extractJSON removes ```json and ``` fences and parses content', () => {
+  // 2a. With ```json
+  const fencedWithJson = '```json\n' + JSON.stringify(sampleValidExtraction, null, 2) + '\n```';
+  const parsed1 = extractJSON(fencedWithJson);
+  assert.equal(ExtractionResultSchema.safeParse(parsed1).success, true);
 
-  assert.equal(result.success, true);
-  if (result.success) {
-    const validated = ExtractionResultSchema.safeParse(result.data);
-    assert.equal(validated.success, true);
-  }
-});
-
-// 3. Fenced JSON (Markdown code fences and accidental surrounding text)
-test('3. Gemma path: fenced JSON and conversational wrapping', () => {
-  // 3a. Standard ```json ... ``` code fence
-  const fencedStandard = '```json\n' + JSON.stringify(sampleValidExtraction) + '\n```';
-  const res1 = safeParseJSON(fencedStandard);
-  assert.equal(res1.success, true);
-
-  // 3b. Generic ``` ... ``` code fence
+  // 2b. With generic ```
   const fencedGeneric = '```\n' + JSON.stringify(sampleValidExtraction) + '\n```';
-  const res2 = safeParseJSON(fencedGeneric);
-  assert.equal(res2.success, true);
-
-  // 3c. Accidental conversational text before and after code block
-  const wrappedOutput = `Here is the requested JSON output for the client conversation:
-
-\`\`\`json
-${JSON.stringify(sampleValidExtraction, null, 2)}
-\`\`\`
-
-All requirements and tasks have been extracted. Let me know if you need changes.`;
-
-  const res3 = safeParseJSON(wrappedOutput);
-  assert.equal(res3.success, true);
-  if (res3.success) {
-    const validated = ExtractionResultSchema.safeParse(res3.data);
-    assert.equal(validated.success, true);
-  }
-
-  // 3d. Preamble and postscript WITHOUT code fences
-  const unfencedWithPreamble = `Sure! Here is the JSON output:
-${JSON.stringify(sampleValidExtraction)}
-Thank you!`;
-
-  const res4 = safeParseJSON(unfencedWithPreamble);
-  assert.equal(res4.success, true);
+  const parsed2 = extractJSON(fencedGeneric);
+  assert.equal(ExtractionResultSchema.safeParse(parsed2).success, true);
 });
 
-// 4. Malformed JSON handling
-test('4. Gemma path: malformed JSON handling', () => {
-  // 4a. Trailing commas before closing braces/brackets
+// 3. JSON surrounded by text
+test('3. JSON surrounded by text: extractJSON extracts substring between first { and final }', () => {
+  const textWithPreambleAndPostscript = `Here is the analysis of the video editing requirements:
+
+${JSON.stringify(sampleValidExtraction, null, 2)}
+
+Please let me know if you would like to make revisions or if you need additional tasks.`;
+
+  const parsed = extractJSON(textWithPreambleAndPostscript);
+  const validated = ExtractionResultSchema.safeParse(parsed);
+  assert.equal(validated.success, true);
+  if (validated.success) {
+    assert.equal(validated.data.requirements.length, 5);
+  }
+});
+
+// 4. Malformed JSON
+test('4. Malformed JSON: extractJSON fails gracefully on invalid JSON and non-JSON text', () => {
+  // 4a. Trailing commas handled defensively
   const withTrailingCommas = `{
     "requirements": [
       {
@@ -222,52 +194,60 @@ test('4. Gemma path: malformed JSON handling', () => {
     "deadline": null,
     "summary": "Project summary",
   }`;
+  const parsedCommas = extractJSON(withTrailingCommas);
+  assert.ok(parsedCommas, 'Trailing commas should be cleaned and parsed successfully');
 
-  const resCommas = safeParseJSON(withTrailingCommas);
-  assert.equal(resCommas.success, true, 'Trailing commas should be cleaned and parsed successfully');
+  // 4b. Broken JSON (syntax error, missing closing bracket/brace)
+  const completelyBroken = '{"requirements": [{"title": "Broken", ';
+  assert.throws(() => {
+    extractJSON(completelyBroken);
+  }, /Couldn't parse Gemma model response as JSON/);
 
-  // 4b. Non-JSON conversational text
-  const totallyBroken = 'I cannot output JSON for this conversation because some messages are missing.';
-  const resBroken = safeParseJSON(totallyBroken);
-  assert.equal(resBroken.success, false);
-  if (!resBroken.success) {
-    assert.match(resBroken.error.message, /Couldn't parse Gemma model response as JSON/);
-  }
+  // 4c. Non-JSON conversational response
+  const nonJson = 'I could not analyze this conversation because the audio was unclear.';
+  assert.throws(() => {
+    extractJSON(nonJson);
+  }, /Couldn't parse Gemma model response as JSON/);
 
-  // 4c. Empty response string
-  const resEmpty = safeParseJSON('');
-  assert.equal(resEmpty.success, false);
+  // 4d. Empty string
+  assert.throws(() => {
+    extractJSON('');
+  }, /Couldn't parse Gemma model response as JSON/);
 });
 
-// 5. Retry / fallback behavior
-test('5. Gemma path: retry/fallback behavior', () => {
-  // Scenario 1: Initial call returns text without valid JSON, triggering retry with strict JSON instruction
-  const initialBadOutput = 'Analyzing client requirements... 1. Cinematic style. 2. Clip 12 then 18.';
-  let firstAttempt = safeParseJSON(initialBadOutput);
-  assert.equal(firstAttempt.success, false, 'First attempt fails safely');
-
-  // Simulated retry with concise JSON-only instruction succeeds
-  const retryOutput = JSON.stringify(sampleValidExtraction);
-  let retryAttempt = safeParseJSON(retryOutput);
-  assert.equal(retryAttempt.success, true, 'Retry attempt succeeds');
-  if (retryAttempt.success) {
-    const validated = ExtractionResultSchema.safeParse(retryAttempt.data);
-    assert.equal(validated.success, true);
-  }
-
-  // Scenario 2: Persistent failure produces user-facing error message without crashing
-  const persistentBadOutput = 'Still invalid text';
-  const finalAttempt = safeParseJSON(persistentBadOutput);
-  assert.equal(finalAttempt.success, false);
-  let thrownMessage = '';
+// 5. Retry behavior
+test('5. Retry behavior: first attempt failure triggers retry with stricter JSON instruction', () => {
+  // Simulated attempt 1: Model outputs conversational text without valid JSON
+  const initialBadOutput = 'I analyzed the wedding reel conversation. The client wants clip 18 and 30s cut.';
+  let parsed1: unknown = null;
   try {
-    if (!finalAttempt.success) {
-      throw new Error("Couldn't parse Gemma model response as JSON. Please try again.");
-    }
-  } catch (err) {
-    thrownMessage = (err as Error).message;
+    parsed1 = extractJSON(initialBadOutput);
+  } catch {
+    parsed1 = null;
   }
-  assert.equal(thrownMessage, "Couldn't parse Gemma model response as JSON. Please try again.");
+  const validated1 = parsed1 ? ExtractionResultSchema.safeParse(parsed1) : null;
+  assert.equal(validated1, null, 'First attempt fails parsing');
+
+  // Simulated retry with stricter instruction returns valid JSON object
+  const retryOutput = JSON.stringify(sampleValidExtraction);
+  const parsed2 = extractJSON(retryOutput);
+  const validated2 = ExtractionResultSchema.safeParse(parsed2);
+
+  assert.equal(validated2.success, true, 'Retry attempt succeeds and passes contract validation');
+  if (validated2.success) {
+    assert.equal(validated2.data.requirements.length, 5);
+  }
+
+  // Simulated persistent failure
+  const persistentBadOutput = 'Still invalid text';
+  let persistentParsed: unknown = null;
+  try {
+    persistentParsed = extractJSON(persistentBadOutput);
+  } catch {
+    persistentParsed = null;
+  }
+  const persistentValidated = persistentParsed ? ExtractionResultSchema.safeParse(persistentParsed) : null;
+  assert.equal(persistentValidated, null, 'Persistent failure correctly detected');
 });
 
 // 6. Production test conversation pipeline & contract
@@ -302,71 +282,5 @@ Client: Add elegant subtitles to the vows.`;
   // Validate all expected requirements exist
   assert.ok(heuristicResult.requirements.length >= 4);
   assert.ok(heuristicResult.tasks.length >= 3);
-});
-
-// 7. Gemma path: Candidate with thought: true part followed by JSON part
-test('7. Gemma path: candidate with reasoning/thought parts (Google API format)', () => {
-  const candidateWithThoughts = {
-    content: {
-      parts: [
-        {
-          thought: true,
-          text: 'Thinking Process:\n1. Understand the goal: user wants structured requirements.\n2. Analyze conversation: client asked for cinematic style, clip 18 opening, under 30s cut.\n3. Build JSON payload according to schema.',
-        },
-        {
-          text: JSON.stringify(sampleValidExtraction),
-        },
-      ],
-    },
-  };
-
-  const extractedText = extractCandidateText(candidateWithThoughts);
-  assert.ok(!extractedText.includes('Thinking Process'), 'Thought parts must be filtered out');
-
-  const parsed = safeParseJSON(extractedText);
-  assert.equal(parsed.success, true);
-  if (parsed.success) {
-    const validated = ExtractionResultSchema.safeParse(parsed.data);
-    assert.equal(validated.success, true);
-  }
-});
-
-// 8. Gemma path: Multi-part candidate response concatenated seamlessly
-test('8. Gemma path: multi-part response split across candidate parts', () => {
-  const fullJson = JSON.stringify(sampleValidExtraction);
-  const midPoint = Math.floor(fullJson.length / 2);
-  const chunk1 = fullJson.slice(0, midPoint);
-  const chunk2 = fullJson.slice(midPoint);
-
-  const multiPartCandidate = {
-    content: {
-      parts: [
-        { text: chunk1 },
-        { text: chunk2 },
-      ],
-    },
-  };
-
-  const extractedText = extractCandidateText(multiPartCandidate);
-  assert.equal(extractedText, fullJson);
-
-  const parsed = safeParseJSON(extractedText);
-  assert.equal(parsed.success, true);
-});
-
-// 9. Gemma path: Plain text with <thought> tags before JSON
-test('9. Gemma path: plain text containing <thought> tags before JSON', () => {
-  const textWithThoughtTags = `<thought>
-Examining the conversation for requirements and revisions.
-Found: clip 18, under 30s, cinematic style.
-</thought>
-${JSON.stringify(sampleValidExtraction)}`;
-
-  const parsed = safeParseJSON(textWithThoughtTags);
-  assert.equal(parsed.success, true);
-  if (parsed.success) {
-    const validated = ExtractionResultSchema.safeParse(parsed.data);
-    assert.equal(validated.success, true);
-  }
 });
 

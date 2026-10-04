@@ -1,6 +1,6 @@
 import { createWorkflow, createStep } from '@mastra/core/workflows';
 import { z } from 'zod';
-import { callAI, isAIConfigured, getGemmaModel, safeParseJSON } from '@/lib/ai/provider';
+import { callAI, isAIConfigured, getGemmaModel, extractJSON } from '@/lib/ai/provider';
 import { buildExtractionPrompt } from '@/lib/ai/prompts';
 import { ExtractionResultSchema } from '@/lib/validation/schemas';
 import { heuristicExtract } from '@/lib/intelligence/heuristic';
@@ -65,18 +65,31 @@ const requirementExtractionStep = createStep({
         }
 
         const { system, user } = buildExtractionPrompt(messages);
-        const raw = await callAI(system, user, {
-          responseMimeType: 'application/json',
-        });
+        let raw = await callAI(system, user);
 
-        const parseResult = safeParseJSON(raw);
-        if (!parseResult.success) {
-          throw new Error("Couldn't parse Gemma model response as JSON. Please try again.");
+        let parsed: unknown = null;
+        try {
+          parsed = extractJSON(raw);
+        } catch {
+          parsed = null;
         }
 
-        const validated = ExtractionResultSchema.safeParse(parseResult.data);
-        if (!validated.success) {
-          throw new Error("Couldn't validate extraction from Gemma. The structured output was incomplete.");
+        let validated = parsed ? ExtractionResultSchema.safeParse(parsed) : null;
+
+        // If parsing/validation fails, make one retry with the same plain-text API request and an even stricter JSON-only prompt
+        if (!validated || !validated.success) {
+          const stricterUser = `${user}\n\nCRITICAL REQUIREMENT: Return exactly one valid JSON object matching this schema. No markdown, no code fences, no explanation. Start immediately with "{" and end with "}".`;
+          try {
+            raw = await callAI(system, stricterUser, { temperature: 0.1 });
+            parsed = extractJSON(raw);
+            validated = ExtractionResultSchema.safeParse(parsed);
+          } catch {
+            // Keep validated as failed
+          }
+        }
+
+        if (!validated || !validated.success) {
+          throw new Error("Couldn't parse Gemma model response as JSON. Please try again.");
         }
 
         return {

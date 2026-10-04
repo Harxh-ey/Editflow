@@ -18,138 +18,96 @@ export function isAIConfigured(): boolean {
 }
 
 export interface CallAIOptions {
-  responseMimeType?: string;
   temperature?: number;
   maxOutputTokens?: number;
 }
 
 /**
- * Extracts generated text from a Google Generative Language API candidate.
- * Filters out internal reasoning/thought parts (e.g. from models with thought: true)
- * and concatenates all text parts to avoid truncating responses split across multiple parts.
+ * Robust extractJSON function:
+ * - trim response
+ * - remove ```json / ``` fences if present
+ * - find the first {
+ * - find the matching final }
+ * - parse that substring with JSON.parse
  */
-export function extractCandidateText(candidate?: {
-  content?: {
-    parts?: Array<{ text?: string; thought?: boolean }>;
-  };
-}): string {
-  const parts = candidate?.content?.parts ?? [];
-
-  // Filter out thought/scratchpad parts (models emitting reasoning with thought: true)
-  const answerParts = parts.filter(
-    (p) => !p.thought && typeof p.text === 'string' && p.text.trim().length > 0
-  );
-
-  if (answerParts.length > 0) {
-    return answerParts.map((p) => p.text).join('').trim();
+export function extractJSON<T = unknown>(rawText: string): T {
+  if (!rawText || typeof rawText !== 'string') {
+    throw new Error("Couldn't parse Gemma model response as JSON. Please try again.");
   }
 
-  // Fallback to all text parts if no parts are unmarked
-  const allTextParts = parts.filter(
-    (p) => typeof p.text === 'string' && p.text.trim().length > 0
-  );
-  return allTextParts.map((p) => p.text).join('').trim();
+  // 1. trim response
+  let cleaned = rawText.replace(/^\uFEFF/, '').trim();
+
+  // 2. remove ```json / ``` fences if present
+  const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenceMatch) {
+    cleaned = fenceMatch[1].trim();
+  } else {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  }
+
+  // 3. find the first {
+  const firstBrace = cleaned.indexOf('{');
+  // 4. find the matching final }
+  const lastBrace = cleaned.lastIndexOf('}');
+
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) {
+    throw new Error("Couldn't parse Gemma model response as JSON. Please try again.");
+  }
+
+  // 5. parse that substring with JSON.parse
+  const jsonSubstring = cleaned.slice(firstBrace, lastBrace + 1).trim();
+
+  try {
+    return JSON.parse(jsonSubstring) as T;
+  } catch {
+    // Defensive cleanup for trailing commas if model generated them
+    try {
+      const withoutTrailingCommas = jsonSubstring.replace(/,\s*([\]}])/g, '$1');
+      return JSON.parse(withoutTrailingCommas) as T;
+    } catch {
+      throw new Error("Couldn't parse Gemma model response as JSON. Please try again.");
+    }
+  }
 }
 
 /**
- * Strips markdown code fences (```json ... ```), reasoning tags, and extracts the outermost
+ * Strips markdown code fences (```json ... ```) and extracts the outermost
  * JSON object or array from text emitted by instruction-tuned Gemma models.
  */
 export function extractCleanJson(rawText: string): string {
   if (!rawText) return '';
-  let cleaned = rawText.replace(/^\uFEFF/, '').trim();
-
-  // Strip <thought>...</thought> or <think>...</think> reasoning blocks if present
-  cleaned = cleaned.replace(/<(thought|think)>[\s\S]*?<\/\1>/gi, '').trim();
-
-  // 1. If wrapped in markdown code fences, extract the fenced block (preferring ```json)
-  const jsonFenceMatch = cleaned.match(/```json\s*([\s\S]*?)\s*```/i);
-  const anyFenceMatch = cleaned.match(/```\s*([\s\S]*?)\s*```/i);
-  const fenceContent = jsonFenceMatch?.[1] ?? anyFenceMatch?.[1];
-
-  if (fenceContent && (fenceContent.includes('{') || fenceContent.includes('['))) {
-    cleaned = fenceContent.trim();
+  let cleaned = rawText.trim();
+  const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenceMatch) {
+    cleaned = fenceMatch[1].trim();
+  } else {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   }
-
-  // 2. If the text still has surrounding text, isolate the outermost JSON structure
   const firstBrace = cleaned.indexOf('{');
-  const firstBracket = cleaned.indexOf('[');
-
-  if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
-    const lastBrace = cleaned.lastIndexOf('}');
-    if (lastBrace > firstBrace) {
-      cleaned = cleaned.slice(firstBrace, lastBrace + 1).trim();
-    }
-  } else if (firstBracket !== -1) {
-    const lastBracket = cleaned.lastIndexOf(']');
-    if (lastBracket > firstBracket) {
-      cleaned = cleaned.slice(firstBracket, lastBracket + 1).trim();
-    }
+  const lastBrace = cleaned.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace >= firstBrace) {
+    return cleaned.slice(firstBrace, lastBrace + 1).trim();
   }
-
   return cleaned;
 }
 
 /**
- * Safely parses JSON emitted by Gemma.
- * Employs defensive multi-stage fallback:
- * 1. Direct JSON.parse
- * 2. Code-fence, thought-tag, and boundary extraction
- * 3. Trailing comma cleanup (e.g. { "a": 1, })
- * 4. JS-style line comment cleanup
+ * Safely parses JSON emitted by Gemma using extractJSON.
  */
 export function safeParseJSON<T = unknown>(
   rawText: string
 ): { success: true; data: T } | { success: false; error: Error; raw: string } {
-  if (!rawText || typeof rawText !== 'string' || !rawText.trim()) {
+  try {
+    const data = extractJSON<T>(rawText);
+    return { success: true, data };
+  } catch (error) {
     return {
       success: false,
-      error: new Error("Couldn't parse Gemma model response as JSON. Please try again."),
+      error: error instanceof Error ? error : new Error("Couldn't parse Gemma model response as JSON. Please try again."),
       raw: rawText || '',
     };
   }
-
-  // Stage 1: Direct parse
-  try {
-    const data = JSON.parse(rawText) as T;
-    return { success: true, data };
-  } catch {
-    // Continue
-  }
-
-  // Stage 2: Cleaned via extractCleanJson (fences & bounds)
-  const cleaned = extractCleanJson(rawText);
-  try {
-    const data = JSON.parse(cleaned) as T;
-    return { success: true, data };
-  } catch {
-    // Continue
-  }
-
-  // Stage 3: Clean trailing commas before closing braces/brackets
-  try {
-    const withoutTrailingCommas = cleaned.replace(/,\s*([\]}])/g, '$1');
-    const data = JSON.parse(withoutTrailingCommas) as T;
-    return { success: true, data };
-  } catch {
-    // Continue
-  }
-
-  // Stage 4: Strip JS-style line comments (// ...) outside strings if stage 3 fails
-  try {
-    const withoutTrailingCommas = cleaned.replace(/,\s*([\]}])/g, '$1');
-    const withoutComments = withoutTrailingCommas.replace(/\/\/[^\n\r]*/g, '');
-    const data = JSON.parse(withoutComments) as T;
-    return { success: true, data };
-  } catch {
-    // Continue
-  }
-
-  return {
-    success: false,
-    error: new Error("Couldn't parse Gemma model response as JSON. Please try again."),
-    raw: rawText,
-  };
 }
 
 export async function callAI(
@@ -190,16 +148,10 @@ async function callGoogleGemma(
   // Passing system instructions within the initial user prompt context ensures compatibility across Gemma model variants.
   const combinedPrompt = `${systemPrompt}\n\n[USER INSTRUCTION]:\n${userPrompt}`;
 
-  const mimeType = options?.responseMimeType ?? 'application/json';
   const generationConfig: Record<string, unknown> = {
     temperature: options?.temperature ?? 0.2,
     maxOutputTokens: options?.maxOutputTokens ?? 4096,
   };
-
-  if (mimeType) {
-    generationConfig.response_mime_type = mimeType;
-    generationConfig.responseMimeType = mimeType;
-  }
 
   const body = {
     contents: [
@@ -212,28 +164,11 @@ async function callGoogleGemma(
   };
 
   try {
-    let response = await fetch(url, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-
-    // If endpoint rejects response_mime_type with 400, fall back to standard text generation
-    if (!response.ok && response.status === 400 && mimeType) {
-      console.warn('Gemma endpoint returned 400 with response_mime_type. Retrying with standard text generation...');
-      const fallbackConfig: Record<string, unknown> = {
-        temperature: options?.temperature ?? 0.2,
-        maxOutputTokens: options?.maxOutputTokens ?? 4096,
-      };
-      response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: combinedPrompt }] }],
-          generationConfig: fallbackConfig,
-        }),
-      });
-    }
 
     if (!response.ok) {
       const errorData = await response.text();
@@ -242,13 +177,12 @@ async function callGoogleGemma(
     }
 
     const data = await response.json();
-    const candidate = data?.candidates?.[0];
-    const text = extractCandidateText(candidate);
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text) {
       throw new Error('Gemma returned an empty response.');
     }
 
-    return extractCleanJson(text);
+    return text;
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('Gemma')) {
       throw error;
@@ -275,7 +209,6 @@ async function callOpenAIGemma(
       { role: 'user', content: userPrompt },
     ],
     temperature: options?.temperature ?? 0.2,
-    response_format: { type: 'json_object' },
   };
 
   try {
@@ -300,7 +233,7 @@ async function callOpenAIGemma(
       throw new Error('Gemma endpoint returned an empty response.');
     }
 
-    return extractCleanJson(content);
+    return content;
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('Gemma')) {
       throw error;
